@@ -1,6 +1,6 @@
 var util = require('util');
-var WebSocket = require('./src/ReconnectingWebSocket.js');
-var http = require('http');
+var WebSocket = require('./reconnecting-websocket.js');
+var express = require('express');
 var _ = require('underscore');
 var uuid = require('node-uuid');
 
@@ -44,7 +44,7 @@ module.exports = function (options) {
 	this._httpTriggerHandler = null;
 
 	//the http server reference
-	this._server = null;
+	this.httpApp = null;
 
 	//setup initial methods
 
@@ -60,10 +60,21 @@ module.exports = function (options) {
 	};
 
 	//setup a connector http trigger handler
-	this.onHttpTrigger = function(httpTriggerHandler) {
+	this.trigger = function(httpTriggerHandler, middlewareCallback) {
 		this._httpTriggerHandler = httpTriggerHandler;
-		//Create a server
-		this._server = http.createServer(function(httpRequest, httpResponse) {
+
+		console.log("Creating a trigger HTTP server on port %s", options.httpPort);
+
+		this.httpApp = express();
+		this.httpApp.listen(options.httpPort);
+
+		//call middleware callback before we 
+		if (middlewareCallback) {
+			middlewareCallback();
+		}
+
+		//listen to all requests
+		this.httpApp.all('*', function(httpRequest, httpResponse, next) {
 			console.log("Received incoming http request on %s", httpRequest.url);
 
 			//Check if the request is a healthz request			
@@ -80,33 +91,52 @@ module.exports = function (options) {
 				return;
 			}
 
-			//call the http trigger handler with the request/response 
-			this._httpTriggerHandler(httpRequest, httpResponse, function(workflowRef, onMetaData) {
-				//get the meta data for the workflow
-				this.getMetadata(workflowRef, function(metaData) {
-					//call the on meta data callback 
-					onMetaData(metaData, function(triggerOutput, onTriggerResponse) {
-						this.triggerWorkflow(workflowRef, triggerOutput, onTriggerResponse);
-					}.bind(this));
+			//Get the workflow details
+			var workflowRef = httpRequest.headers['x-connector-workflow'],
+				connectorName = httpRequest.headers['x-connector-name'],
+				connectorVersion = httpRequest.headers['x-connector-version'],
+				connectorMessage = httpRequest.headers['x-connector-message'];
+
+			console.log("Connector metadata - workflow: %s name: %s version: %s message: %s", workflowRef, connectorName, connectorVersion, connectorMessage);
+
+			//get the meta data for the workflow ref
+			this.getMetadata(workflowRef, function(metaData) {
+
+				//call the http trigger handler with the request/response, reference, meta data etc
+				this._httpTriggerHandler(httpRequest, httpResponse, metaData, {
+					workflow: workflowRef,
+					connector: connectorName,
+					version: connectorVersion,
+					message: connectorMessage
+				}, function(output, responseCallback) {
+					this.triggerWorkflow(workflowRef, output, function(body) {
+						if (responseCallback)
+							responseCallback(body);
+						//finish the middleware
+						next();
+					});
 				}.bind(this));
-			}.bind(this));
+				
+			}.bind(this));				
 
-			// //TODO: get meta data
-			// handler(httpRequest, httpResponse);
-		}.bind(this));
 
-		console.log("Creating a trigger HTTP server on port %s", options.httpPort);
 
-		//Lets start our server
-		this._server.listen(options.httpPort, function(){
-		    //Callback triggered when server is successfully listening. Hurray!
-		    console.log("Server listening on %s", options.httpPort);
-		});
+		}.bind(this));		
+		
 	};
+
+	//allow for middleware to be added to express
+	this.use = function() {
+		if (!this.httpApp)
+			throw new Error("Cannot add express middleware as there is not a valid connection");
+		console.log("Adding express middleware");
+		var args = Array.prototype.slice.call(arguments);		
+		this.httpApp.use.apply(this.httpApp, args);
+	}
 
 	//trigger a workflow with some output data
 	this.triggerWorkflow = function(workflowRef, output, callback) {
-		console.log("Triggering workflow %s", workflowRef);
+		console.log("Triggering workflow %s with output %s", workflowRef, JSON.stringify(output));
 
 		//Generate a correlation id
 		var correlationId = uuid.v4();
@@ -133,7 +163,7 @@ module.exports = function (options) {
 		this._wsMessage(correlationId, {
 			message: "trigger_request",
 			workflow_ref: workflowRef
-		});		
+		}, output);		
 	};
 
 	//get workflow meta data
@@ -225,24 +255,19 @@ module.exports = function (options) {
 			messageData = JSON.parse(messageData);
 		var correlationId = messageData.id;
 
-		if (!messageData.header) {
-			this._wsError(correlationId, "INVALID_PAYLOAD", "Invalid webhook message received (header required)");
-			return;
-		}
+		console.log("Incoming websocket message %s", JSON.stringify(messageData));
 
 		//If there is no message
-		if (!messageData.header.message) {
+		if (!messageData.header || !messageData.header.message) {
 			//Check the correlation id
 			var handler = this._correlationHandlers[correlationId];
 			if (handler) {
 				handler(messageData);
 				return;
 			}
-			this._wsError(correlationId, "INVALID_PAYLOAD", "Invalid webhook message received (header.message required)");
+			this._wsError(correlationId, "invalid_payload", "Invalid websocket message received (header.message required)");
 			return;
-		}
-
-		console.log("Incoming message %s", messageData.header.message);
+		}		
 
 		if ("healthz" == messageData.header.message) {
 			if (this._healthHandler) {
@@ -261,16 +286,20 @@ module.exports = function (options) {
 
 		var handler = this._messageHandlers[messageData.header.message];
 		if (!handler) {
-			this._wsError(correlationId, "NOT_IMPLEMENTED", util.format("Could not find a valid message handler for %s", messageData.header.message));
+			this._wsError(correlationId, "not_implemented", util.format("Could not find a valid message handler for %s", messageData.header.message));
 			return;
 		}
-		//call the handler, passing the body and a callback to reply
-		handler(messageData.body, function(response) {
-			//send the reply back with the same correlation id
-			this._wsMessage(correlationId, {}, response);
-		}.bind(this), function(code, message, payload) {
-			this._wsError(correlationId, code, message, payload);
-		}.bind(this));
+		try {
+			//call the handler, passing the body and a callback to reply
+			handler(messageData.body, function(response) {
+				//send the reply back with the same correlation id
+				this._wsMessage(correlationId, {}, response);
+			}.bind(this), function(code, message, payload) {
+				this._wsError(correlationId, code, message, payload);
+			}.bind(this));
+		} catch (e) {
+			this._wsError(correlationId, "exception", e.message);
+		}
 	}.bind(this));	
 
 

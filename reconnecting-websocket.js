@@ -150,7 +150,7 @@ function ReconnectingWebSocket(url, protocols) {
             if (self.debug || ReconnectingWebSocket.debugAll) {
                 console.log('ReconnectingWebSocket', 'onmessage', url, event.data);
             }
-        	self._onmessage.call(null, event.data);
+            self._onmessage.call(null, event.data);
         };
         ws.onerror = function() {
             if (self.debug || ReconnectingWebSocket.debugAll) {
