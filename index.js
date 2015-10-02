@@ -6,8 +6,8 @@ var uuid = require('node-uuid');
 
 //Some default options
 var defaultOptions = {
-	websocketUrl: process.env.CONNECTOR_WEBSOCKET_URL,
-	httpPort: process.env.CONNECTOR_HTTP_PORT
+	websocketUrl: process.env.CONNECTOR_WEBSOCKET_URL || "http://localhost:8989/ws/deployment1",
+	httpPort: process.env.CONNECTOR_HTTP_PORT || "8888"
 }
 
 
@@ -303,6 +303,23 @@ module.exports = function (options) {
 	}.bind(this));	
 
 
+	//Helper method for making sure certain parameters are present in an incoming message
+	this.hasRequiredParams = function(params, handler) {
+		return function(data, done, err) {
+
+			//check all the params exist
+			for (var i=0;i<params.length;i++) {
+				var paramName = params[i];
+				if (!data[paramName]) {
+					err("invalid_input", "The " + paramName + " parameter is required");
+					return;
+				}
+			}
+
+			//call the handler
+			handler(data, done, err);
+		};
+	};
 
 
 }
