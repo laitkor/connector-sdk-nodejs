@@ -109,12 +109,16 @@ module.exports = function (options) {
 					version: connectorVersion,
 					message: connectorMessage
 				}, function(output, responseCallback) {
-					this.triggerWorkflow(workflowRef, output, function(body) {
-						if (responseCallback)
+					var cb = null;
+					if (responseCallback) {
+						cb = function(body) {
 							responseCallback(body);
-						//finish the middleware
+							next();
+						}
+					} else {
 						next();
-					});
+					}
+					this.triggerWorkflow(workflowRef, output, cb);
 				}.bind(this));
 				
 			}.bind(this));				
