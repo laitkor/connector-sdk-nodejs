@@ -1,7 +1,7 @@
 {
-  "name": "trayio-connector-sdk-nodejs",
+  "name": "trayio-connector-sdk",
   "description": "Software Development Kit (SDK) for writing tray.io connectors",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dependencies": {
     "body-parser": "^1.13.3",
     "express": "^4.13.3",
