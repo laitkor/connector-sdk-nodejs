@@ -112,9 +112,7 @@ module.exports = function (options) {
 					var cb = null;
 					if (responseCallback) {
 						cb = function(body) {
-							if (responseCallback)
-								responseCallback(body);
-							//finish the middleware
+							responseCallback(body);
 							next();
 						}
 					} else {
