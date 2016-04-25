@@ -7,9 +7,19 @@ var uuid = require('node-uuid');
 //Some default options
 var defaultOptions = {
 	websocketUrl: process.env.CONNECTOR_WEBSOCKET_URL || "http://localhost:8989/ws/deployment1",
-	httpPort: process.env.CONNECTOR_HTTP_PORT || "8888"
+	httpPort: process.env.CONNECTOR_HTTP_PORT || "8888",
+	logLevel: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'development' ? 'info' : 'warning')
 }
 
+var logLevels = {
+	debug: 1,
+	info: 2,
+	notice: 3,
+	warning: 4,
+	error: 5,
+	crit: 6,
+	alert: 7
+}
 
 module.exports = function (options) {
 
@@ -20,7 +30,11 @@ module.exports = function (options) {
 		throw new Error("Invalid websocket url passed to tray.io node.js connector");
 	}
 
-	console.info("Initialising tray.io node.js connector");
+	function log(level) {
+		return logLevels[level] >= (logLevels[options.logLevel] || 5);
+	}
+
+	log('info') && console.info("Initialising tray.io node.js connector");
 
 	//setup initial properties
 
@@ -50,7 +64,7 @@ module.exports = function (options) {
 
 	//setup a connector message handler
 	this.on = function(message, handler) {
-		console.log("Adding message handler for %s", message);
+		log('info') && console.info("Adding message handler for %s", message);
 		this._messageHandlers[message] = handler;
 	};
 
@@ -63,7 +77,7 @@ module.exports = function (options) {
 	this.trigger = function(httpTriggerHandler, middlewareCallback) {
 		this._httpTriggerHandler = httpTriggerHandler;
 
-		console.log("Creating a trigger HTTP server on port %s", options.httpPort);
+		log('debug') && console.log("Creating a trigger HTTP server on port %s", options.httpPort);
 
 		this.httpApp = express();
 		this.httpApp.listen(options.httpPort);
@@ -75,7 +89,7 @@ module.exports = function (options) {
 
 		//listen to all requests
 		this.httpApp.all('*', function(httpRequest, httpResponse, next) {
-			console.log("Received incoming http request on %s", httpRequest.url);
+			log('debug') && console.log("Received incoming http request on %s", httpRequest.url);
 
 			//Check if the request is a healthz request			
 			if ("/healthz" === httpRequest.url) {
@@ -97,7 +111,7 @@ module.exports = function (options) {
 				connectorVersion = httpRequest.headers['x-connector-version'],
 				connectorMessage = httpRequest.headers['x-connector-message'];
 
-			console.log("Connector metadata - workflow: %s name: %s version: %s message: %s", workflowRef, connectorName, connectorVersion, connectorMessage);
+			log('debug') && console.log("Connector metadata - workflow: %s name: %s version: %s message: %s", workflowRef, connectorName, connectorVersion, connectorMessage);
 
 			//get the meta data for the workflow ref
 			this.getMetadata(workflowRef, function(metaData) {
@@ -133,14 +147,14 @@ module.exports = function (options) {
 	this.use = function() {
 		if (!this.httpApp)
 			throw new Error("Cannot add express middleware as there is not a valid connection");
-		console.log("Adding express middleware");
+		log('debug') && console.log("Adding express middleware");
 		var args = Array.prototype.slice.call(arguments);		
 		this.httpApp.use.apply(this.httpApp, args);
 	}
 
 	//trigger a workflow with some output data
 	this.triggerWorkflow = function(workflowRef, output, callback) {
-		console.log("Triggering workflow %s with output %s", workflowRef, JSON.stringify(output));
+		log('debug') && console.log("Triggering workflow %s with output %s", workflowRef, JSON.stringify(output));
 
 		//Generate a correlation id
 		var correlationId = uuid.v4();
@@ -150,17 +164,17 @@ module.exports = function (options) {
 
 			//add a correlation id handler function
 			this._correlationHandlers[correlationId] = function(messageData) {
-				console.log("Got trigger response for %s with correlation id %s", workflowRef, correlationId);
+				log('debug') && console.log("Got trigger response for %s with correlation id %s", workflowRef, correlationId);
 				//call the callback with the meta data message body
 				callback(messageData.body);
 				//remove the correlation id
 				delete this._correlationHandlers[correlationId];
 			}.bind(this);
 
-			console.log("Sending trigger request/response for %s with correlation id %s", workflowRef, correlationId);
+			log('debug') && console.log("Sending trigger request/response for %s with correlation id %s", workflowRef, correlationId);
 
 		} else {
-			console.log("Sending trigger fire & forget for %s with correlation id %s", workflowRef, correlationId);
+			log('debug') && console.log("Sending trigger fire & forget for %s with correlation id %s", workflowRef, correlationId);
 		}
 
 		//send the meta data request
@@ -173,21 +187,21 @@ module.exports = function (options) {
 	//get workflow meta data
 	this.getMetadata = function(workflowRef, callback) {
 
-		console.log("Metadata request for %s", workflowRef);
+		log('debug') && console.log("Metadata request for %s", workflowRef);
 
 		//Generate a correlation id
 		var correlationId = uuid.v4();
 
 		//add a correlation id handler function
 		this._correlationHandlers[correlationId] = function(messageData) {
-			console.log("Got metadata response for %s with correlation id %s", workflowRef, correlationId);
+			log('debug') && console.log("Got metadata response for %s with correlation id %s", workflowRef, correlationId);
 			//call the callback with the meta data message body
 			callback(messageData.body);
 			//remove the correlation id
 			delete this._correlationHandlers[correlationId];
 		}.bind(this);
 
-		console.log("Sending metadata request for %s with correlation id %s", workflowRef, correlationId);
+		log('debug') && console.log("Sending metadata request for %s with correlation id %s", workflowRef, correlationId);
 
 		//send the meta data request
 		this._wsMessage(correlationId, {
@@ -198,7 +212,7 @@ module.exports = function (options) {
 
 	//log and send an error message back to the web socket
 	this._wsError = function(id, code, error, payload) {
-		console.error(new Error(error));
+		log('error') && console.error(new Error(error));
 		//send the message
 		this._wsMessage(id, {
 		    error: true
@@ -212,13 +226,13 @@ module.exports = function (options) {
 	//send a message back to the websocket
 	this._wsMessage = function(id, header, body) {
 		if (!this._ready) {
-			console.log('Websocket not ready, queueing message');
+			log('debug') && console.log('Websocket not ready, queueing message');
 			//add a callback to the message queue to do the message again
 			this._messageQueue.push(function() {
 				this._wsMessage(id, header, body);
 			}.bind(this));
 		} else {
-			console.log('Sending connector message');
+			log('debug') && console.log('Sending connector message');
 			this.ws.send(JSON.stringify({
 			  id: id,
 			  header: header || {},
@@ -227,16 +241,16 @@ module.exports = function (options) {
 		}
 	}
 
-	console.log("Connecting to connector websocket on %s", options.websocketUrl);
+	log('debug') && console.log("Connecting to connector websocket on %s", options.websocketUrl);
 	this.ws = new WebSocket(options.websocketUrl);
 
 	//handle websocket connecting
 	this.ws.onopen(function() {
-	  	console.log("Websocket connected");
+	  	log('debug') && console.log("Websocket connected");
 	  	this._ready = true;
 
 	  	if (!_.isEmpty(this._messageQueue)) {
-	  		console.log("Replaying %d queued websocket messages", this._messageQueue.length);
+	  		log('debug') && console.log("Replaying %d queued websocket messages", this._messageQueue.length);
 		  	//make sure any queued messages are sent
 		  	while (!_.isEmpty(this._messageQueue)) {
 		  		var cb = this._messageQueue.shift();
@@ -248,7 +262,7 @@ module.exports = function (options) {
 
 	//handle websocket disconnects
 	this.ws.onclose(function() {
-	  console.log('Websocket disconnected');
+	  log('debug') && console.log('Websocket disconnected');
 	  this._ready = false;
 	}.bind(this));
 
@@ -259,7 +273,7 @@ module.exports = function (options) {
 			messageData = JSON.parse(messageData);
 		var correlationId = messageData.id;
 
-		console.log("Incoming websocket message %s", JSON.stringify(messageData));
+		log('debug') && console.log("Incoming websocket message %s", JSON.stringify(messageData));
 
 		//If there is no message
 		if (!messageData.header || !messageData.header.message) {
